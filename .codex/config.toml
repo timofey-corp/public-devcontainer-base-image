@@ -1,4 +1,0 @@
-model_reasoning_effort = "xhigh"
-
-[features]
-hooks = true
