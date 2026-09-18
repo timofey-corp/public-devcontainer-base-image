@@ -3,9 +3,9 @@
 # at the repo root.
 #
 # - Nightly: compares upstream versions (base image digest, node LTS, and
-#   tool versions from GitHub releases, crates.io, and Anthropic's release
-#   feed) against the versions.json asset of the newest GitHub release;
-#   rebuilds and releases only when something changed.
+#   tool versions from GitHub releases, crates.io, the npm registry, and
+#   Anthropic's release feed) against the versions.json asset of the newest
+#   GitHub release; rebuilds and releases only when something changed.
 # - Push to main touching the image definition: always rebuilds.
 # - Manual dispatch: force=true rebuilds unconditionally; force=false just
 #   runs the up-to-date check (and rebuilds if needed).

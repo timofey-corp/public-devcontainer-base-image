@@ -48,6 +48,15 @@ RUN case "${TARGETARCH}" in \
  && ln -sf node /usr/local/bin/nodejs \
  && node --version && npm --version
 
+# pnpm — official standalone installer, in the form pnpm documents for Docker
+# (`pnpm setup` needs SHELL, which a RUN step lacks). PNPM_HOME is system-wide;
+# the /usr/local/bin links keep pnpm on PATH in login shells, which reset PATH.
+ENV PNPM_HOME=/usr/local/share/pnpm
+ENV PATH="${PNPM_HOME}/bin:${PATH}"
+RUN curl -fsSL https://get.pnpm.io/install.sh | env ENV="${HOME}/.bashrc" SHELL="$(which bash)" bash - \
+ && ln -sf "${PNPM_HOME}/bin/pnpm" "${PNPM_HOME}/bin/pnpx" /usr/local/bin/ \
+ && pnpm --version
+
 # Claude Code — Anthropic's native installer. It executes the downloaded
 # binary, which is unreliable under QEMU, so CI builds each platform natively.
 RUN curl -fsSL https://claude.ai/install.sh | bash -s latest \

@@ -69,6 +69,10 @@ htmlq="$("${CURL[@]}" -A "${USER_AGENT}" https://crates.io/api/v1/crates/htmlq \
   | jq -re '.crate.max_stable_version')" \
   || fail "could not resolve htmlq version"
 
+# npm registry 'latest' dist-tag — the same source pnpm's installer resolves
+pnpm="$("${CURL[@]}" https://registry.npmjs.org/pnpm/latest | jq -re '.version')" \
+  || fail "could not resolve pnpm version"
+
 jq -nS \
   --arg base_image "mcr.microsoft.com/devcontainers/base:trixie@${base_digest}" \
   --arg node_lts "${node_lts}" \
@@ -76,6 +80,7 @@ jq -nS \
   --arg codex "${codex}" \
   --arg htmlq "${htmlq}" \
   --arg pandoc "${pandoc}" \
+  --arg pnpm "${pnpm}" \
   '{
     base_image: $base_image,
     node_lts: $node_lts,
@@ -83,6 +88,7 @@ jq -nS \
       "claude-code": $claude,
       "codex": $codex,
       "htmlq": $htmlq,
-      "pandoc": $pandoc
+      "pandoc": $pandoc,
+      "pnpm": $pnpm
     }
   }'

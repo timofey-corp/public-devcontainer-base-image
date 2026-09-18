@@ -10,7 +10,7 @@ set -Eeuxo pipefail
 
 # One tool per check: multi-arg `command -v` succeeds if ANY name resolves,
 # which would let a missing tool slip through.
-for tool in htmlq pandoc tmux rg claude codex node npm; do
+for tool in htmlq pandoc tmux rg claude codex node npm pnpm; do
   command -v "${tool}" > /dev/null || { echo "missing: ${tool}" >&2; exit 1; }
 done
 
@@ -22,5 +22,6 @@ claude --version
 codex --version
 node --version
 npm --version
+pnpm --version
 
 echo "smoke test passed"
