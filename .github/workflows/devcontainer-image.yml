@@ -1,14 +1,21 @@
 # Builds and publishes the prebuilt devcontainer image
-# (ghcr.io/timofey-corp/public-devcontainer-base-image) from
-# .devcontainer/base-image/.
+# (ghcr.io/timofey-corp/public-devcontainer-base-image) from the Dockerfile
+# at the repo root.
 #
-# - Nightly: compares upstream versions (base image digest, node feature
-#   digest, node LTS, and tool versions from GitHub releases, crates.io, and
-#   Anthropic's release feed) against the versions.json asset of the newest
-#   GitHub release; rebuilds and releases only when something changed.
+# - Nightly: compares upstream versions (base image digest, node LTS, and
+#   tool versions from GitHub releases, crates.io, and Anthropic's release
+#   feed) against the versions.json asset of the newest GitHub release;
+#   rebuilds and releases only when something changed.
 # - Push to main touching the image definition: always rebuilds.
 # - Manual dispatch: force=true rebuilds unconditionally; force=false just
 #   runs the up-to-date check (and rebuilds if needed).
+#
+# Each platform is built and smoke-tested natively on its own runner — no
+# QEMU: the Claude Code installer executes the downloaded binary, which is
+# unreliable under emulation, and compiling htmlq emulated is very slow. The
+# per-platform images are pushed by digest only; the release job assembles
+# them into the multi-arch tags, so a tag only ever points at smoke-tested
+# images.
 name: devcontainer-image
 
 on:
@@ -17,7 +24,7 @@ on:
   push:
     branches: [main]
     paths:
-      - ".devcontainer/base-image/**"
+      - "Dockerfile"
       - ".github/workflows/devcontainer-image.yml"
       - ".github/scripts/devcontainer-image-versions.sh"
       - ".github/scripts/devcontainer-image-smoke.sh"
@@ -49,7 +56,7 @@ env:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       needs_build: ${{ steps.decide.outputs.needs_build }}
     steps:
@@ -97,18 +104,83 @@ jobs:
           name: versions
           path: versions.json
 
-  build-release:
+  build:
     needs: check
     if: needs.check.outputs.needs_build == 'true'
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm # GitHub-hosted arm64, free for public repos
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      # Pushed by digest only, untagged. The Dockerfile resolves upstream
+      # "latest" versions at build time, so never reuse cached layers or a
+      # stale base image. provenance=false keeps the push a plain
+      # single-platform manifest (BuildKit would otherwise wrap it in an index
+      # carrying an attestation manifest).
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: ${{ matrix.platform }}
+          tags: ${{ env.IMAGE }}
+          outputs: type=image,push-by-digest=true,name-canonical=true,push=true
+          no-cache: true
+          pull: true
+          provenance: false
+
+      - name: Smoke test
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          docker run --rm -v "${PWD}/.github/scripts:/smoke:ro" \
+            "${IMAGE}@${DIGEST}" bash /smoke/devcontainer-image-smoke.sh
+
+      - name: Export digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/digests"
+          touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
       - uses: actions/download-artifact@v4
         with:
           name: versions
 
-      - uses: docker/setup-qemu-action@v3
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digest-*
+          merge-multiple: true
 
       - uses: docker/setup-buildx-action@v3
 
@@ -133,47 +205,19 @@ jobs:
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
           echo "Release tag: ${tag}"
 
-      # With `platform` set, devcontainers/ci does not push: it exports the
-      # multi-arch build to an OCI archive at /tmp/output.tar, to be pushed
-      # with skopeo (preinstalled on the runner, reuses docker login creds).
-      - name: Build image
-        uses: devcontainers/ci@v0.3
-        with:
-          configFile: .devcontainer/base-image/devcontainer.json
-          imageName: ${{ env.IMAGE }}
-          imageTag: ${{ steps.tag.outputs.tag }}
-          platform: linux/amd64,linux/arm64
-          push: never
-          noCache: true
-
-      - name: Push image to GHCR
+      # Both platform images passed their smoke tests to get here; only now do
+      # they get the tags the devcontainers actually pull.
+      - name: Create multi-arch tags
         env:
           TAG: ${{ steps.tag.outputs.tag }}
+        working-directory: ${{ runner.temp }}/digests
         run: |
-          ls -la /tmp/output.tar
-          skopeo copy --all oci-archive:/tmp/output.tar "docker://${IMAGE}:${TAG}"
-
-      - name: Smoke test (amd64)
-        env:
-          TAG: ${{ steps.tag.outputs.tag }}
-        run: |
-          docker run --rm --platform linux/amd64 \
-            -v "${PWD}/.github/scripts:/smoke:ro" \
-            "${IMAGE}:${TAG}" bash /smoke/devcontainer-image-smoke.sh full
-
-      - name: Smoke test (arm64, emulated)
-        env:
-          TAG: ${{ steps.tag.outputs.tag }}
-        run: |
-          docker run --rm --platform linux/arm64 \
-            -v "${PWD}/.github/scripts:/smoke:ro" \
-            "${IMAGE}:${TAG}" bash /smoke/devcontainer-image-smoke.sh binaries
-
-      # Only a smoke-tested image gets the tag the devcontainers actually pull
-      - name: Promote to latest
-        env:
-          TAG: ${{ steps.tag.outputs.tag }}
-        run: docker buildx imagetools create --tag "${IMAGE}:latest" "${IMAGE}:${TAG}"
+          ls -1
+          [[ "$(ls -1 | wc -l)" -eq 2 ]] || { echo "expected exactly 2 platform digests" >&2; exit 1; }
+          docker buildx imagetools create \
+            --tag "${IMAGE}:${TAG}" --tag "${IMAGE}:latest" \
+            $(printf -- "${IMAGE}@sha256:%s " *)
+          docker buildx imagetools inspect "${IMAGE}:${TAG}"
 
       - name: Create GitHub release
         env:
@@ -193,7 +237,6 @@ jobs:
             echo "| --- | --- |"
             jq -r '
               [["base image", .base_image],
-               ["node feature", .features["ghcr.io/devcontainers/features/node:1"]],
                ["node (LTS)", .node_lts]]
               + (.tools | to_entries | map([.key, .value]))
               | .[] | "| \(.[0]) | \(.[1]) |"

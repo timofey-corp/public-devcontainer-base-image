@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Computes the upstream version manifest for the prebuilt devcontainer image
-# (.devcontainer/base-image/) and prints it as canonical JSON on stdout.
+# (Dockerfile at the repo root) and prints it as canonical JSON on stdout.
 #
 # The devcontainer-image workflow compares this output against the
 # versions.json asset attached to the newest GitHub release to decide whether
@@ -11,8 +11,8 @@
 # apt-installed tools (tmux, ripgrep) are intentionally not tracked: they are
 # pinned by Debian trixie and refresh on every rebuild.
 #
-# When changing the tool set, update this script AND
-# .devcontainer/base-image/Dockerfile AND devcontainer-image-smoke.sh.
+# When changing the tool set, update this script AND the Dockerfile at the
+# repo root AND devcontainer-image-smoke.sh.
 set -Eeuo pipefail
 
 CURL=(curl -fsSL --retry 3 --retry-delay 2 --max-time 60)
@@ -38,11 +38,6 @@ manifest_digest() {
     | awk 'tolower($1) == "docker-content-digest:" && !found { found = 1; sub(/\r$/, "", $2); print $2 }'
 }
 
-# Anonymous pull token for a public GHCR repository. Args: repo
-ghcr_token() {
-  "${CURL[@]}" "https://ghcr.io/token?scope=repository:$1:pull" | jq -re '.token'
-}
-
 # Tag of a repository's newest GitHub release, via the redirect. Args: owner/repo
 github_latest_tag() {
   local loc tag
@@ -56,11 +51,6 @@ github_latest_tag() {
 base_digest="$(manifest_digest mcr.microsoft.com devcontainers/base trixie)" \
   || fail "could not resolve base image digest"
 [[ -n "${base_digest}" ]] || fail "base image digest came back empty"
-
-node_feature_digest="$(manifest_digest ghcr.io devcontainers/features/node 1 \
-  "$(ghcr_token devcontainers/features/node)")" \
-  || fail "could not resolve node feature digest"
-[[ -n "${node_feature_digest}" ]] || fail "node feature digest came back empty"
 
 node_lts="$("${CURL[@]}" https://nodejs.org/dist/index.json \
   | jq -re '[.[] | select(.lts != false)][0].version')" \
@@ -81,7 +71,6 @@ htmlq="$("${CURL[@]}" -A "${USER_AGENT}" https://crates.io/api/v1/crates/htmlq \
 
 jq -nS \
   --arg base_image "mcr.microsoft.com/devcontainers/base:trixie@${base_digest}" \
-  --arg node_feature "${node_feature_digest}" \
   --arg node_lts "${node_lts}" \
   --arg claude "${claude}" \
   --arg codex "${codex}" \
@@ -89,7 +78,6 @@ jq -nS \
   --arg pandoc "${pandoc}" \
   '{
     base_image: $base_image,
-    features: { "ghcr.io/devcontainers/features/node:1": $node_feature },
     node_lts: $node_lts,
     tools: {
       "claude-code": $claude,
